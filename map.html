@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>校园路面平整度地图</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  html, body, #map { height: 100%; margin: 0; }
+  #panel { position: absolute; top: 10px; left: 10px; z-index: 1000; background: #fff;
+           padding: 12px 14px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.2);
+           font-family: system-ui, "Microsoft YaHei", sans-serif; font-size: 13px; max-width: 280px; }
+  #panel h3 { margin: 0 0 6px; font-size: 15px; }
+  .lg { display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+        margin-right: 6px; vertical-align: -1px; }
+  #worst { margin: 6px 0 0; padding-left: 18px; }
+  #worst li { margin: 2px 0; }
+  .muted { color: #888; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h3>校园路面平整度</h3>
+  <div id="stats" class="muted">加载中…</div>
+  <div style="margin-top:8px">
+    <span class="lg" style="background:#2ecc71"></span>优（RMS &lt; 0.8 m/s²）<br>
+    <span class="lg" style="background:#f39c12"></span>良（0.8 – 2.5）<br>
+    <span class="lg" style="background:#e74c3c"></span>差（&gt; 2.5）
+  </div>
+  <div style="margin-top:8px">最差路段 TOP5：<ol id="worst"></ol></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// 瓦片服务：
+//   'amap' = 高德（免 key、中文标注；非官方瓦片接口，仅课程演示用）
+//   'osm'  = OpenStreetMap 官方瓦片（海外网络更稳）
+// 校内加载慢就换另一项，或改用高德/百度官方 JS API。
+const TILE_PROVIDER = 'amap';
+const TILES = {
+  amap: {url: 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+         subdomains: '1234', attr: '© 高德地图'},
+  osm:  {url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+         subdomains: '', attr: '© OpenStreetMap contributors'}
+};
+const COLORS = {'优': '#2ecc71', '良': '#f39c12', '差': '#e74c3c'};
+
+const map = L.map('map').setView([39.9042, 116.4074], 15);
+const t = TILES[TILE_PROVIDER];
+L.tileLayer(t.url, {subdomains: t.subdomains.split(''), attribution: t.attr, maxZoom: 19})
+ .addTo(map);
+
+fetch('/api/segments').then(r => r.json()).then(d => {
+  const segs = d.segments || [];
+  if (!segs.length) {
+    document.getElementById('stats').textContent =
+      '暂无数据：先跑 python analyze.py，再刷新本页。';
+    return;
+  }
+  const pts = [];
+  for (let k = 0; k + 1 < segs.length; k++) {
+    const a = segs[k], b = segs[k + 1];
+    if (a.lat == null || b.lat == null) continue;
+    L.polyline([[a.lat, a.lon], [b.lat, b.lon]],
+      {color: COLORS[a.grade] || '#999', weight: 6, opacity: .85})
+     .bindPopup(`路段 #${a.seg}　得分 ${a.score.toFixed(2)} m/s²<br>` +
+                `评级 ${a.grade}　${a.rides} 趟数据`)
+     .addTo(map);
+    pts.push([a.lat, a.lon]);
+  }
+  if (pts.length) map.fitBounds(pts, {padding: [30, 30]});
+
+  const st = d.stats || {};
+  document.getElementById('stats').innerHTML =
+    `总里程 ≈ ${Math.round(st.route_len_m || 0)} m　有效趟数 ${st.rides || 0}<br>` +
+    `平整率（优+良里程占比）<b>${((st.paved_ratio || 0) * 100).toFixed(0)}%</b><br>` +
+    ((st.excluded && st.excluded.length)
+      ? `<span style="color:#e74c3c">已剔除异常会话 ${st.excluded.length} 个</span>`
+      : '') +
+    `<br><span class="muted">更新于 ${d.generated || '—'}</span>`;
+  const worst = document.getElementById('worst');
+  (st.worst || []).forEach(w => {
+    const li = document.createElement('li');
+    li.textContent = `#${w.seg} 得分 ${w.score.toFixed(2)}（${w.grade}）`;
+    worst.appendChild(li);
+  });
+}).catch(() => {
+  document.getElementById('stats').textContent = '加载 /api/segments 失败：确认服务端在运行。';
+});
+</script>
+</body>
+</html>
