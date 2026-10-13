@@ -49,6 +49,8 @@ let pending = null;          // 正在发送的批次 {seq, batch}，失败后�
 let sending = false;
 let batchSeq = 0, running = false, lastFlush = 0;
 let upSamples = 0, nAcc = 0, nGps = 0, nMotion = 0, startedAt = 0, session = '', wakeLock = null;
+let rateWinStart = 0, rateWinAcc = 0, rateWarn = false, lastRate = 0, lastHb = 0;
+let hiddenAt = 0, interruptedS = 0;
 
 const $ = id => document.getElementById(id);
 
@@ -106,7 +108,7 @@ function refresh(lastOk) {
   const note = lastOk === false ? '（上传失败，已缓存，将自动重传）' : '';
   $('status').innerHTML =
     `会话：${session || '—'}<br>` +
-    `已采集：加速度 ${nAcc} 条 / 定位 ${nGps} 条（运动事件 ${nMotion} 次）<br>` +
+    `已采集：加速度 ${nAcc} 条（约 ${lastRate ? lastRate.toFixed(0) : '—'} 次/秒）/ 定位 ${nGps} 条<br>` +
     `已上传：${upSamples} 条　待上传：${buf.length + (pending ? pending.batch.length : 0)} 条 ${note}`;
 }
 
@@ -114,8 +116,17 @@ async function keepAwake(on) {
   try {
     if (on && 'wakeLock' in navigator) {
       wakeLock = await navigator.wakeLock.request('screen');
+      if (wakeLock) {
+        logEvent('wl_on');
+        wakeLock.addEventListener('release', () => {
+          wakeLock = null;                       // 置空，回到前台才能自动重新申请
+          if (running) logEvent('wl_release');   // 系统强制释放（如熄屏）→ 上报取证
+        });
+      }
     } else if (wakeLock) { wakeLock.release(); wakeLock = null; }
-  } catch (e) { /* 不支持就算了，靠手动保持常亮 */ }
+  } catch (e) {
+    logEvent('wl_fail');   // 部分 ROM 会拒绝 Wake Lock 申请
+  }
 }
 
 function showAlert(msg) {
@@ -123,6 +134,37 @@ function showAlert(msg) {
   el.style.display = 'block';
   el.textContent = msg;
 }
+
+function logEvent(ev) {
+  // 上报页面状态事件（可见性 / WakeLock），供事后数据质量追溯；失败不影响采集
+  if (!session) return;
+  const headers = {'Content-Type': 'application/json'};
+  if (TOKEN) headers['X-Token'] = TOKEN;
+  fetch('/api/event', {method: 'POST', headers,
+    body: JSON.stringify({session, t: Date.now(), ev})}).catch(() => {});
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!running) return;
+  if (document.visibilityState === 'visible') {
+    logEvent('visible');
+    if (hiddenAt) {
+      interruptedS += (Date.now() - hiddenAt) / 1000;
+      hiddenAt = 0;
+      showAlert(`⚠ 采集中断过：刚才页面离开前台约 ${interruptedS.toFixed(0)} 秒，这段时间没有数据。骑行时请保持本页显示在屏幕上、不要按电源键。`);
+    }
+    if (!wakeLock) keepAwake(true);   // 回到前台后自动重新申请屏幕常亮
+  } else {
+    hiddenAt = Date.now();
+    logEvent('hidden');
+  }
+});
+
+// 更细的生命体征：用于定位"是谁把页面切走的"（桌面排查用，不影响采集）
+window.addEventListener('blur', () => { if (running) logEvent('blur'); });
+window.addEventListener('focus', () => { if (running) logEvent('focus'); });
+['freeze', 'resume', 'pagehide'].forEach(n =>
+  document.addEventListener(n, () => { if (running) logEvent(n); }));
 
 $('start').onclick = async () => {
   // iOS 13+ Safari 必须在用户手势里申请运动传感器权限，否则收不到加速度事件
@@ -140,37 +182,66 @@ $('start').onclick = async () => {
   session = rider + '-' + Date.now();
   buf = []; pending = null; batchSeq = 0; upSamples = 0; nAcc = 0; nGps = 0;
   nMotion = 0; startedAt = Date.now();
+  rateWinStart = 0; rateWinAcc = 0; rateWarn = false; lastRate = 0; lastHb = 0;
+  hiddenAt = 0; interruptedS = 0;
   running = true; lastFlush = Date.now();
   $('start').disabled = true; $('stop').disabled = false;
   $('alert').style.display = 'none';
   keepAwake(true);
+  logEvent('start');
   refresh();
 };
 
 $('stop').onclick = async () => {
   running = false;
+  logEvent('stop');
   $('stop').disabled = true;
   await flush();
   keepAwake(false);
   $('start').disabled = false;
+  if (interruptedS > 1) {
+    $('status').innerHTML += `<br>⚠ 本次采集中断约 ${interruptedS.toFixed(0)} 秒（这段时间没有数据）。`;
+  }
   if (!buf.length && !pending) {
     $('status').innerHTML += '<br>✔ 已停止，数据已全部上传，可以关闭页面。';
   }
 };
 
 function checkMotion() {
-  if (!running || nAcc > 0 || Date.now() - startedAt < 5000) {
-    if (!running) $('alert').style.display = 'none';
+  if (!running) { $('alert').style.display = 'none'; rateWarn = false; return; }
+  if (Date.now() - startedAt < 5000) return;
+  if (nAcc === 0) {
+    showAlert(nMotion === 0
+      ? '⚠ 5 秒内没有收到任何运动事件：请检查权限——安卓点地址栏锁形图标 → 权限 → 允许"运动与方向"；'
+        + 'iOS 在 设置 → Safari → 运动与方向访问 中打开；并且不要用微信/国产浏览器打开本页，换 Chrome 或 Safari。'
+      : '⚠ 收到了运动事件但加速度数据为空：请换 Chrome（安卓）或 Safari（iOS）重试。');
     return;
   }
-  showAlert(nMotion === 0
-    ? '⚠ 5 秒内没有收到任何运动事件：请检查权限——安卓点地址栏锁形图标 → 权限 → 允许"运动与方向"；'
-      + 'iOS 在 设置 → Safari → 运动与方向访问 中打开；并且不要用微信/国产浏览器打开本页，换 Chrome 或 Safari。'
-    : '⚠ 收到了运动事件但加速度数据为空：请换 Chrome（安卓）或 Safari（iOS）重试。');
+  // 采样率自检：正常约 50–60 次/秒；持续过低说明页面退到后台或屏幕熄灭
+  if (Date.now() - startedAt < 10000) return;
+  const now = Date.now();
+  if (!rateWinStart) { rateWinStart = now; rateWinAcc = nAcc; return; }
+  if (now - rateWinStart >= 5000) {
+    lastRate = (nAcc - rateWinAcc) / ((now - rateWinStart) / 1000);
+    rateWinStart = now; rateWinAcc = nAcc;
+    refresh();
+    if (lastRate < 15) {
+      showAlert(`⚠ 加速度采样率只有约 ${lastRate.toFixed(0)} 次/秒（正常约 60）：`
+        + '页面很可能已退到后台或屏幕熄灭。请点亮屏幕、保持本页在前台，骑行中不要切到其他应用。');
+      rateWarn = true;
+    } else if (rateWarn) {
+      $('alert').style.display = 'none';
+      rateWarn = false;
+    }
+  }
 }
 
 setInterval(() => {
   checkMotion();   // 传感器自检
+  if (running && Date.now() - lastHb > 15000) {   // 心跳：后台/挂起会在事件流里留出空档
+    lastHb = Date.now();
+    logEvent(`hb v=${document.visibilityState} r=${Math.round(lastRate)} wl=${wakeLock ? 1 : 0}`);
+  }
   if (!buf.length && !pending) return;
   if (running && Date.now() - lastFlush <= BATCH_MS && buf.length <= MAX_BUF && !pending) return;
   flush();   // 运行中按批上传；停止后残留数据继续自动补传

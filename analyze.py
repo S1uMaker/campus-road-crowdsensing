@@ -58,6 +58,30 @@ def load_rows():
                          'FROM samples ORDER BY session, t').fetchall()
 
 
+def load_events():
+    """读取页面状态事件（老数据库没有 events 表时返回空）。"""
+    try:
+        with sqlite3.connect(DB) as c:
+            return c.execute('SELECT session, t, ev FROM events '
+                             'ORDER BY session, t').fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+
+def session_event_stats(evs):
+    """由事件流估算：页面隐藏总时长（秒）、WakeLock 被系统收走次数。"""
+    hidden_s, wl_release, hidden_at = 0.0, 0, None
+    for t, ev in evs:
+        if ev == 'hidden':
+            hidden_at = t
+        elif ev == 'visible' and hidden_at is not None:
+            hidden_s += (t - hidden_at) / 1000.0
+            hidden_at = None
+        elif ev == 'wl_release':
+            wl_release += 1
+    return round(hidden_s, 1), wl_release
+
+
 def split_accel_gps(rows):
     accel, gps = [], []
     for _, t, ax, ay, az, lat, lon, sp in rows:
@@ -195,6 +219,10 @@ def main():
     for r in rows:
         by_session[r[0]].append(r)
 
+    ev_by = defaultdict(list)
+    for s, t, ev in load_events():
+        ev_by[s].append((t, ev))
+
     # 网格：按数据平均纬度把 SEG_LEN 米换算成经纬度边长
     lats = [r[5] for r in rows if r[5] is not None]
     mean_lat = sum(lats) / len(lats) if lats else 39.9
@@ -204,6 +232,7 @@ def main():
     included, excluded = {}, []
     for name in sorted(by_session):
         info, reason = process_session(by_session[name], dlat, dlon)
+        info['hidden_s'], info['wl_release'] = session_event_stats(ev_by.get(name, []))
         if not reason and (info['valid_ratio'] < MIN_SESSION_VALID
                            or info['valid'] < 100 or info['dist_m'] < 50):
             reason = (f"有效样本占比 {info['valid_ratio']:.0%}、有效样本 "
@@ -211,12 +240,14 @@ def main():
         if reason:
             excluded.append(dict(session=name, reason=reason,
                                  **{k: info[k] for k in
-                                    ('accel', 'gps', 'valid', 'valid_ratio', 'dist_m')}))
+                                    ('accel', 'gps', 'valid', 'valid_ratio', 'dist_m',
+                                     'hidden_s', 'wl_release')}))
         else:
             included[name] = info
         print(f"[会话] {name}: 加速度 {info['accel']} 条(fs≈{info['fs']}Hz) "
               f"定位 {info['gps']} 条 里程 {info['dist_m']} m "
               f"有效 {info['valid']} ({info['valid_ratio']:.0%}) "
+              f"| 页面隐藏 {info['hidden_s']:.0f}s WakeLock丢失 {info['wl_release']} 次 "
               + (f"→ 剔除：{reason}" if reason else "→ 计入"))
 
     if not included:
@@ -293,7 +324,8 @@ def main():
             'worst': [{'idx': c['idx'], 'score': c['score'], 'grade': c['grade'],
                        'lat': c['lat'], 'lon': c['lon']} for c in worst],
             'excluded': excluded,
-            'sessions': [{'session': n, 'dist_m': i['dist_m'], 'valid': i['valid']}
+            'sessions': [{'session': n, 'dist_m': i['dist_m'], 'valid': i['valid'],
+                          'hidden_s': i['hidden_s'], 'wl_release': i['wl_release']}
                          for n, i in included.items()],
         },
     }

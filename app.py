@@ -6,6 +6,7 @@
 页面:  http://127.0.0.1:8000      采集页（手机浏览器打开）
        http://127.0.0.1:8000/map  结果地图页
 接口:  POST /api/upload    批量上传（幂等：重传/重放同一批数据零效果）
+       POST /api/event     页面状态事件（可见性/WakeLock，供数据质量追溯）
        GET  /api/segments  analyze.py 生成的分段结果
        GET  /api/stats     数据统计（演示重放攻击的幂等性用）
 
@@ -41,6 +42,13 @@ def init_db():
             lat REAL, lon REAL, sp REAL,
             PRIMARY KEY (session, seq, i)
         )''')
+        # 页面状态事件：可见性变化 / WakeLock 申请与丢失 / 心跳，用于事后核对采集环境
+        c.execute('''CREATE TABLE IF NOT EXISTS events(
+            session TEXT NOT NULL,
+            t       INTEGER NOT NULL,
+            ev      TEXT NOT NULL,
+            PRIMARY KEY (session, t, ev)
+        )''')
 
 
 @app.post('/api/upload')
@@ -60,6 +68,19 @@ def upload():
         c.executemany(
             'INSERT OR IGNORE INTO samples VALUES (?,?,?,?,?,?,?,?,?,?)', rows)
     return jsonify(ok=True, received=len(rows))
+
+
+@app.post('/api/event')
+def event():
+    if TOKEN and request.headers.get('X-Token') != TOKEN:
+        return jsonify(ok=False, error='bad token'), 401
+    d = request.get_json(force=True, silent=True) or {}
+    if not d.get('session') or not d.get('ev'):
+        return jsonify(ok=False, error='bad request'), 400
+    with sqlite3.connect(DB) as c:
+        c.execute('INSERT OR IGNORE INTO events VALUES (?,?,?)',
+                  (str(d['session']), int(d.get('t') or 0), str(d['ev'])[:80]))
+    return jsonify(ok=True)
 
 
 @app.get('/api/segments')
