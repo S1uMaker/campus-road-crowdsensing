@@ -4,3 +4,7 @@ segments.json
 __pycache__/
 *.pyc
 .DS_Store
+
+# 本地自签名证书（--https 局域网方案用，不入库）
+server.crt
+server.key

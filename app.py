@@ -16,6 +16,7 @@
 import json
 import os
 import sqlite3
+import sys
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -93,8 +94,18 @@ def map_page():
 
 if __name__ == '__main__':
     init_db()
+    # --https：用同目录自签名证书启 HTTPS（局域网手机直连用；隧道方案无需加）
+    ssl_ctx = None
+    if '--https' in sys.argv:
+        cert = os.path.join(BASE, 'server.crt')
+        key = os.path.join(BASE, 'server.key')
+        if os.path.exists(cert) and os.path.exists(key):
+            ssl_ctx = (cert, key)
+        else:
+            print('未找到 server.crt / server.key，仍按 http 启动')
+    scheme = 'https' if ssl_ctx else 'http'
     print('服务已启动：')
-    print('  采集页（手机打开）  http://<本机IP>:8000/')
-    print('  结果地图页          http://127.0.0.1:8000/map')
-    print('  外网 HTTPS 访问     cloudflared tunnel --url http://localhost:8000')
-    app.run(host='0.0.0.0', port=8000)
+    print(f'  采集页（手机打开）  {scheme}://<本机IP>:8000/'
+          + ('（自签名证书，手机首次提示时点"继续访问"）' if ssl_ctx else ''))
+    print(f'  地图页              {scheme}://127.0.0.1:8000/map')
+    app.run(host='0.0.0.0', port=8000, ssl_context=ssl_ctx)

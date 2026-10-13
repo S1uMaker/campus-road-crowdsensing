@@ -13,6 +13,8 @@
   button:disabled { opacity: .4; }
   .warn { background: #fff3cd; border: 1px solid #e0a800; padding: 8px; border-radius: 6px;
           margin-bottom: 10px; font-size: 14px; display: none; }
+  .alert { background: #fdecea; border: 1px solid #e74c3c; color: #b3261e; padding: 8px;
+           border-radius: 6px; margin-bottom: 10px; font-size: 14px; display: none; }
   #status { margin-top: 14px; font-size: 15px; line-height: 1.8; color: #333; }
   .hint { color: #888; font-size: 13px; margin-top: 16px; line-height: 1.8; }
 </style>
@@ -20,6 +22,7 @@
 <body>
 <h2>校园路面平整度采集</h2>
 <div id="warn" class="warn"></div>
+<div id="alert" class="alert"></div>
 <label>骑手号 <input id="rider" value="r1" size="3" style="font-size:16px;padding:6px"></label>
 <div style="margin-top:12px">
   <button id="start">▶ 开始采集</button>
@@ -27,8 +30,11 @@
 </div>
 <div id="status">未开始</div>
 <div class="hint">
+  · 用 Chrome（安卓）或 Safari（iOS）打开，不要用微信内置浏览器<br>
   · 手机固定在车把支架上再点"开始"<br>
-  · 采集期间保持本页面在前台、屏幕常亮<br>
+  · iOS 首次点"开始"会请求运动传感器权限，请选择允许<br>
+  · 开始后 5 秒内"加速度"条数应持续增长，不增长会出现红色提示<br>
+  · 采集期间保持本页面在前台、屏幕常亮（锁屏会中断采集）<br>
   · 断网不影响：数据自动缓存，恢复后补传<br>
   · 结束后等状态确认上传完成再关页面
 </div>
@@ -42,7 +48,7 @@ let buf = [];                // 待上传队列（断网就留在这里）
 let pending = null;          // 正在发送的批次 {seq, batch}，失败后保持同一 seq 重试（服务端幂等去重）
 let sending = false;
 let batchSeq = 0, running = false, lastFlush = 0;
-let upSamples = 0, nAcc = 0, nGps = 0, session = '', wakeLock = null;
+let upSamples = 0, nAcc = 0, nGps = 0, nMotion = 0, startedAt = 0, session = '', wakeLock = null;
 
 const $ = id => document.getElementById(id);
 
@@ -54,9 +60,10 @@ if (!window.isSecureContext &&
 }
 
 window.addEventListener('devicemotion', e => {
+  nMotion++;                    // 无论数据是否可用都计数，用于区分"没有事件"和"事件无数据"
   if (!running) return;
   const a = e.accelerationIncludingGravity;
-  if (!a) return;
+  if (!a || a.x == null || a.y == null || a.z == null) return;
   buf.push({t: Date.now(), ax: a.x, ay: a.y, az: a.z});
   nAcc++; refresh();
 });
@@ -99,7 +106,7 @@ function refresh(lastOk) {
   const note = lastOk === false ? '（上传失败，已缓存，将自动重传）' : '';
   $('status').innerHTML =
     `会话：${session || '—'}<br>` +
-    `已采集：加速度 ${nAcc} 条 / 定位 ${nGps} 条<br>` +
+    `已采集：加速度 ${nAcc} 条 / 定位 ${nGps} 条（运动事件 ${nMotion} 次）<br>` +
     `已上传：${upSamples} 条　待上传：${buf.length + (pending ? pending.batch.length : 0)} 条 ${note}`;
 }
 
@@ -111,12 +118,31 @@ async function keepAwake(on) {
   } catch (e) { /* 不支持就算了，靠手动保持常亮 */ }
 }
 
-$('start').onclick = () => {
+function showAlert(msg) {
+  const el = $('alert');
+  el.style.display = 'block';
+  el.textContent = msg;
+}
+
+$('start').onclick = async () => {
+  // iOS 13+ Safari 必须在用户手势里申请运动传感器权限，否则收不到加速度事件
+  try {
+    if (typeof DeviceMotionEvent !== 'undefined' &&
+        typeof DeviceMotionEvent.requestPermission === 'function') {
+      const res = await DeviceMotionEvent.requestPermission();
+      if (res !== 'granted') {
+        showAlert('运动权限被拒绝：请在 设置 → Safari → 运动与方向访问 中允许后刷新重试。');
+        return;   // 没有加速度数据就没必要开始
+      }
+    }
+  } catch (e) { /* 安卓等无需申请 */ }
   const rider = ($('rider').value || 'r1').trim();
   session = rider + '-' + Date.now();
   buf = []; pending = null; batchSeq = 0; upSamples = 0; nAcc = 0; nGps = 0;
+  nMotion = 0; startedAt = Date.now();
   running = true; lastFlush = Date.now();
   $('start').disabled = true; $('stop').disabled = false;
+  $('alert').style.display = 'none';
   keepAwake(true);
   refresh();
 };
@@ -132,7 +158,19 @@ $('stop').onclick = async () => {
   }
 };
 
+function checkMotion() {
+  if (!running || nAcc > 0 || Date.now() - startedAt < 5000) {
+    if (!running) $('alert').style.display = 'none';
+    return;
+  }
+  showAlert(nMotion === 0
+    ? '⚠ 5 秒内没有收到任何运动事件：请检查权限——安卓点地址栏锁形图标 → 权限 → 允许"运动与方向"；'
+      + 'iOS 在 设置 → Safari → 运动与方向访问 中打开；并且不要用微信/国产浏览器打开本页，换 Chrome 或 Safari。'
+    : '⚠ 收到了运动事件但加速度数据为空：请换 Chrome（安卓）或 Safari（iOS）重试。');
+}
+
 setInterval(() => {
+  checkMotion();   // 传感器自检
   if (!buf.length && !pending) return;
   if (running && Date.now() - lastFlush <= BATCH_MS && buf.length <= MAX_BUF && !pending) return;
   flush();   // 运行中按批上传；停止后残留数据继续自动补传

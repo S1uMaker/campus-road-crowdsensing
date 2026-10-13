@@ -28,7 +28,8 @@
     <span class="lg" style="background:#f39c12"></span>良（0.8 – 2.5）<br>
     <span class="lg" style="background:#e74c3c"></span>差（&gt; 2.5）
   </div>
-  <div style="margin-top:8px">最差路段 TOP5：<ol id="worst"></ol></div>
+  <div class="muted" style="margin-top:4px">每格约 10×10 米，颜色 = 该格多趟融合得分</div>
+  <div style="margin-top:8px">最差网格 TOP5：<ol id="worst"></ol></div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -58,23 +59,28 @@ fetch('/api/segments').then(r => r.json()).then(d => {
       '暂无数据：先跑 python analyze.py，再刷新本页。';
     return;
   }
-  const pts = [];
-  for (let k = 0; k + 1 < segs.length; k++) {
-    const a = segs[k], b = segs[k + 1];
-    if (a.lat == null || b.lat == null) continue;
-    L.polyline([[a.lat, a.lon], [b.lat, b.lon]],
-      {color: COLORS[a.grade] || '#999', weight: 6, opacity: .85})
-     .bindPopup(`路段 #${a.seg}　得分 ${a.score.toFixed(2)} m/s²<br>` +
-                `评级 ${a.grade}　${a.rides} 趟数据`)
-     .addTo(map);
-    pts.push([a.lat, a.lon]);
+  // 路线底图（灰色细线，画在下层）
+  if (d.route && d.route.length > 1) {
+    L.polyline(d.route, {color: '#546e7a', weight: 3, opacity: .55}).addTo(map);
   }
+
+  // 平整度网格：每个 10 m 格子按评级着色（颜色 = 多趟融合后的得分）
+  const pts = [];
+  segs.forEach(c => {
+    L.rectangle(c.bounds, {
+      color: COLORS[c.grade] || '#999', weight: 1, opacity: .7,
+      fillColor: COLORS[c.grade] || '#999', fillOpacity: .55
+    }).bindPopup(`网格 #${c.idx}　得分 ${c.score.toFixed(2)} m/s²<br>` +
+                 `评级 ${c.grade}　${c.rides} 趟数据`).addTo(map);
+    pts.push([c.lat, c.lon]);
+  });
   if (pts.length) map.fitBounds(pts, {padding: [30, 30]});
 
   const st = d.stats || {};
   document.getElementById('stats').innerHTML =
     `总里程 ≈ ${Math.round(st.route_len_m || 0)} m　有效趟数 ${st.rides || 0}<br>` +
-    `平整率（优+良里程占比）<b>${((st.paved_ratio || 0) * 100).toFixed(0)}%</b><br>` +
+    `网格数 ${st.cells || 0}（每格约 ${d.grid_m || 10} m）<br>` +
+    `平整率（优+良网格占比）<b>${((st.paved_ratio || 0) * 100).toFixed(0)}%</b><br>` +
     ((st.excluded && st.excluded.length)
       ? `<span style="color:#e74c3c">已剔除异常会话 ${st.excluded.length} 个</span>`
       : '') +
@@ -82,7 +88,7 @@ fetch('/api/segments').then(r => r.json()).then(d => {
   const worst = document.getElementById('worst');
   (st.worst || []).forEach(w => {
     const li = document.createElement('li');
-    li.textContent = `#${w.seg} 得分 ${w.score.toFixed(2)}（${w.grade}）`;
+    li.textContent = `#${w.idx} 得分 ${w.score.toFixed(2)}（${w.grade}）`;
     worst.appendChild(li);
   });
 }).catch(() => {

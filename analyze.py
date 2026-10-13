@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 分析脚本：data.db → segments.json（供 /map 地图页读取）
-流程：读样本 → 低通滤波估重力 → 垂向加速度 a⊥ → 按 GPS 距离切 10 m 段
-      → 每段 RMS → 多趟取中位数 → 分级 → 输出
+流程：读样本 → 低通滤波估重力 → 垂向加速度 a⊥ → 按 GPS 坐标网格（10 m × 10 m）
+      聚合 → 每格 RMS → 多趟取中位数 → 分级 → 输出
+对齐方式：网格按绝对经纬度切分，不依赖"从起点数第几段"。不同骑手、不同起点、
+          不同方向只要经过同一块路面，就会落入同一个网格并自动融合。
 运行：python analyze.py
 注意：TH_GOOD / TH_MED 为初始值，试骑后用已知路况的锚点路段校准。
 """
@@ -20,12 +22,12 @@ DB = os.path.join(BASE, 'data.db')
 OUT = os.path.join(BASE, 'segments.json')
 
 # ── 可调参数（校准改这里）────────────────────────────
-SEG_LEN = 10.0        # 分段长度（米）
+SEG_LEN = 10.0        # 网格边长（米）：越小越精细，但每格样本数越少
 LP_WIN = 0.5          # 重力低通估计窗长（秒）
 MIN_SPEED = 1.0       # < 1 m/s 视为静止，样本无效
 MAX_SPEED = 8.0       # > 8 m/s 视为异常（质检拦截）
 JUMP_SPEED = 15.0     # GPS 相邻点隐含速度 > 15 m/s → 瞬移，剔除
-MIN_SEG_SAMPLES = 20  # 每段最少有效样本数
+MIN_SEG_SAMPLES = 20  # 每个网格最少有效样本数
 MIN_SESSION_VALID = 0.2   # 会话有效样本占比下限，低于则整体剔除
 TH_GOOD = 0.8         # RMS < 0.8 → 优
 TH_MED = 2.5          # RMS < 2.5 → 良；否则 差
@@ -137,8 +139,8 @@ def grade_of(score):
     return '差'
 
 
-def process_session(rows):
-    """单趟处理：返回 (info, 剔除原因或 None)。info['segs'] = {段号: [a⊥...]}"""
+def process_session(rows, dlat, dlon):
+    """单趟处理：返回 (info, 剔除原因或 None)。info['cells'] = {(row,col): [a⊥...]}"""
     accel, gps = split_accel_gps(rows)
     gps, cum, gps_dropped = clean_gps(gps)
     vert = vertical_series(accel)
@@ -148,14 +150,14 @@ def process_session(rows):
         'accel': len(accel), 'gps': len(gps), 'gps_dropped': gps_dropped,
         'fs': round((len(accel) - 1) / duration, 1) if duration > 0 else 0,
         'dist_m': round(cum[-1], 1) if cum else 0,
-        'valid': 0, 'valid_ratio': 0.0, 'segs': {},
+        'valid': 0, 'valid_ratio': 0.0, 'cells': {},
     }
     if not gps or not vert:
         return info, '无定位或无加速度数据'
 
     gt = [g[0] for g in gps]
     speeds = [speed_of(gps, cum, i) for i in range(len(gps))]
-    seg_acc = defaultdict(list)
+    cell_acc = defaultdict(list)
     for t, ap in vert:
         k = bisect.bisect_left(gt, t)
         if k == 0 or k == len(gps):
@@ -169,12 +171,14 @@ def process_session(rows):
         if abs(ap) > 60:
             continue                       # 异常尖峰（质检）
         frac = (t - t0) / (t1 - t0)
-        s = cum[k - 1] + frac * (cum[k] - cum[k - 1])
-        seg_acc[int(s // SEG_LEN)].append(ap)
+        lat = gps[k - 1][1] + frac * (gps[k][1] - gps[k - 1][1])
+        lon = gps[k - 1][2] + frac * (gps[k][2] - gps[k - 1][2])
+        cell = (math.floor(lat / dlat), math.floor(lon / dlon))
+        cell_acc[cell].append(ap)
 
-    info['valid'] = sum(len(v) for v in seg_acc.values())
+    info['valid'] = sum(len(v) for v in cell_acc.values())
     info['valid_ratio'] = round(info['valid'] / max(1, len(vert)), 3)
-    info['segs'] = {k: v for k, v in seg_acc.items() if len(v) >= MIN_SEG_SAMPLES}
+    info['cells'] = {c: v for c, v in cell_acc.items() if len(v) >= MIN_SEG_SAMPLES}
     return info, None
 
 
@@ -191,9 +195,15 @@ def main():
     for r in rows:
         by_session[r[0]].append(r)
 
+    # 网格：按数据平均纬度把 SEG_LEN 米换算成经纬度边长
+    lats = [r[5] for r in rows if r[5] is not None]
+    mean_lat = sum(lats) / len(lats) if lats else 39.9
+    dlat = SEG_LEN / 111320.0
+    dlon = SEG_LEN / (111320.0 * math.cos(math.radians(mean_lat)))
+
     included, excluded = {}, []
     for name in sorted(by_session):
-        info, reason = process_session(by_session[name])
+        info, reason = process_session(by_session[name], dlat, dlon)
         if not reason and (info['valid_ratio'] < MIN_SESSION_VALID
                            or info['valid'] < 100 or info['dist_m'] < 50):
             reason = (f"有效样本占比 {info['valid_ratio']:.0%}、有效样本 "
@@ -216,7 +226,7 @@ def main():
                       f, ensure_ascii=False, indent=1)
         return
 
-    # 参考轨迹：取里程最长的会话（用于地图折线与段中点坐标）
+    # 参考轨迹：取里程最长的会话（用于地图上的路线折线）
     ref_name = max(included, key=lambda n: included[n]['dist_m'])
     _, ref_gps = split_accel_gps(by_session[ref_name])
     ref_gps, ref_cum, _ = clean_gps(ref_gps)
@@ -233,26 +243,35 @@ def main():
         lon = ref_gps[k - 1][2] + f * (ref_gps[k][2] - ref_gps[k - 1][2])
         return lat, lon
 
-    # 逐段跨会话融合：每趟先算段 RMS，再对多趟取中位数
-    seg_scores = defaultdict(list)
+    # 逐网格跨会话融合：每趟先算格内 RMS，再对多趟取中位数
+    cell_scores = defaultdict(list)
+    cell_samples = defaultdict(int)
     for info in included.values():
-        for seg, vals in info['segs'].items():
-            seg_scores[seg].append(math.sqrt(sum(v * v for v in vals) / len(vals)))
+        for c, vals in info['cells'].items():
+            cell_scores[c].append(math.sqrt(sum(v * v for v in vals) / len(vals)))
+            cell_samples[c] += len(vals)
 
-    segments = []
-    for seg in sorted(seg_scores):
-        vals = seg_scores[seg]
+    cells = []
+    for (row, col) in sorted(cell_scores):
+        vals = cell_scores[(row, col)]
         score = round(statistics.median(vals), 3)
-        lat, lon = point_at(seg * SEG_LEN + SEG_LEN / 2)
-        segments.append({'seg': seg, 'lat': round(lat, 6), 'lon': round(lon, 6),
-                         'score': score, 'grade': grade_of(score),
-                         'rides': len(vals)})
+        lat = (row + 0.5) * dlat
+        lon = (col + 0.5) * dlon
+        cells.append({
+            'row': row, 'col': col,
+            'lat': round(lat, 6), 'lon': round(lon, 6),
+            'bounds': [[round(row * dlat, 6), round(col * dlon, 6)],
+                       [round((row + 1) * dlat, 6), round((col + 1) * dlon, 6)]],
+            'score': score, 'grade': grade_of(score),
+            'rides': len(vals), 'n': cell_samples[(row, col)],
+        })
+    for idx, c in enumerate(cells):
+        c['idx'] = idx
 
     route_len = ref_cum[-1] if ref_cum else 0
-    graded = [s for s in segments if s['rides'] > 0]
-    good_len = sum(SEG_LEN for s in graded if s['grade'] in ('优', '良'))
-    paved_ratio = good_len / (len(graded) * SEG_LEN) if graded else 0
-    worst = sorted(graded, key=lambda s: -s['score'])[:5]
+    good = sum(1 for c in cells if c['grade'] in ('优', '良'))
+    paved_ratio = good / len(cells) if cells else 0
+    worst = sorted(cells, key=lambda c: -c['score'])[:5]
 
     # 地图折线：每约 5 m 取一个点
     poly, s = [], 0.0
@@ -263,14 +282,16 @@ def main():
 
     out = {
         'generated': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'segments': segments,
+        'grid_m': SEG_LEN,
+        'segments': cells,
         'route': poly,
         'stats': {
             'route_len_m': round(route_len, 1),
             'rides': len(included),
+            'cells': len(cells),
             'paved_ratio': round(paved_ratio, 3),
-            'worst': [{'seg': s['seg'], 'score': s['score'], 'grade': s['grade']}
-                      for s in worst],
+            'worst': [{'idx': c['idx'], 'score': c['score'], 'grade': c['grade'],
+                       'lat': c['lat'], 'lon': c['lon']} for c in worst],
             'excluded': excluded,
             'sessions': [{'session': n, 'dist_m': i['dist_m'], 'valid': i['valid']}
                          for n, i in included.items()],
@@ -278,9 +299,9 @@ def main():
     }
     with open(OUT, 'w', encoding='utf-8') as f:
         json.dump(out, f, ensure_ascii=False, indent=1)
-    print(f"\n完成：{len(segments)} 个路段，平整率 {paved_ratio:.0%}，"
+    print(f"\n完成：{len(cells)} 个网格，平整率 {paved_ratio:.0%}，"
           f"有效会话 {len(included)} 个，剔除 {len(excluded)} 个 → {OUT}")
-    print('最差路段 TOP5：', [(s['seg'], s['score'], s['grade']) for s in worst])
+    print('最差网格 TOP5：', [(c['idx'], c['score'], c['grade']) for c in worst])
 
 
 if __name__ == '__main__':
