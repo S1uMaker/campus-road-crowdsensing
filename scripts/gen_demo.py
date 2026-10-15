@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
 """
 演示数据生成器：不用真骑车，先生成两趟"骑行"数据把整条链路跑通。
-运行：python gen_demo.py  然后  python analyze.py
+运行：python scripts/gen_demo.py  然后  python scripts/analyze.py
 特点：会话名固定（demo-r1 / demo-r2）+ 时间戳固定 → 重复运行幂等，不会产生重复数据。
-重置：删除 data.db 后重跑本脚本。
+重置：删除 data/data.db 后重跑本脚本。
 """
 import math
 import os
 import random
 import sqlite3
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-DB = os.path.join(BASE, 'data.db')
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA = os.path.join(ROOT, 'data')
+DB = os.path.join(DATA, 'data.db')
 
 # ── 演示路线参数（正式采集前可不管；换个坐标就能在别处预览）──
 CENTER = (39.9042, 116.4074)   # 路线中心（示例坐标，换成校园中心即可）
@@ -27,6 +28,7 @@ random.seed(42)
 
 
 def init_db():
+    os.makedirs(DATA, exist_ok=True)
     with sqlite3.connect(DB) as c:
         c.execute('''CREATE TABLE IF NOT EXISTS samples(
             session TEXT NOT NULL, seq INTEGER NOT NULL, i INTEGER NOT NULL,
@@ -93,7 +95,7 @@ def main():
                           rows)
             total += len(rows)
             print(f'{session}: 生成 {len(rows)} 条样本（加速度 + 定位）')
-    print(f'共 {total} 条（重复运行不会重复入库）。下一步：python analyze.py')
+    print(f'共 {total} 条（重复运行不会重复入库）。下一步：python scripts/analyze.py')
 
 
 if __name__ == '__main__':

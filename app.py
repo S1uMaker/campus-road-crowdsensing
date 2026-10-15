@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-校园路面平整度众包采集 · 服务端（方案 B）
+校园路面平整度众包采集 · 服务端
 ----------------------------------------
 运行:  python app.py
 页面:  http://127.0.0.1:8000      采集页（手机浏览器打开）
        http://127.0.0.1:8000/map  结果地图页
 接口:  POST /api/upload    批量上传（幂等：重传/重放同一批数据零效果）
        POST /api/event     页面状态事件（可见性/WakeLock，供数据质量追溯）
-       GET  /api/segments  analyze.py 生成的分段结果
+       GET  /api/segments  scripts/analyze.py 生成的分段结果
        GET  /api/stats     数据统计（演示重放攻击的幂等性用）
 
 安全演示（可选，成本低、演示效果好）:
   把下面的 TOKEN 改成任意随机串，上传就必须带 X-Token 请求头；
-  采集页 index.html 顶部的 TOKEN 填同一个值。
+  采集页 web/index.html 顶部的 TOKEN 填同一个值。
 """
 import json
 import os
@@ -22,7 +22,10 @@ import sys
 from flask import Flask, jsonify, request, send_from_directory
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DB = os.path.join(BASE, 'data.db')
+WEB = os.path.join(BASE, 'web')        # 前端页面
+DATA = os.path.join(BASE, 'data')      # 运行数据（数据库 / 分析结果）
+CERTS = os.path.join(BASE, 'certs')    # 自签名证书（--https 用）
+DB = os.path.join(DATA, 'data.db')
 
 # 演示用最简认证：留空 = 关闭校验
 TOKEN = ''
@@ -31,6 +34,7 @@ app = Flask(__name__)
 
 
 def init_db():
+    os.makedirs(DATA, exist_ok=True)
     with sqlite3.connect(DB) as c:
         # 主键 (session, seq, i)：断网重传与恶意重放都零效果（幂等）
         c.execute('''CREATE TABLE IF NOT EXISTS samples(
@@ -85,10 +89,10 @@ def event():
 
 @app.get('/api/segments')
 def segments():
-    p = os.path.join(BASE, 'segments.json')
+    p = os.path.join(DATA, 'segments.json')
     if not os.path.exists(p):
         return jsonify(segments=[], stats={},
-                       note='还没有结果：先运行 python analyze.py')
+                       note='还没有结果：先运行 python scripts/analyze.py')
     with open(p, encoding='utf-8') as f:
         return jsonify(json.load(f))
 
@@ -105,12 +109,12 @@ def stats():
 
 @app.get('/')
 def index():
-    return send_from_directory(BASE, 'index.html')
+    return send_from_directory(WEB, 'index.html')
 
 
 @app.get('/map')
 def map_page():
-    return send_from_directory(BASE, 'map.html')
+    return send_from_directory(WEB, 'map.html')
 
 
 if __name__ == '__main__':
@@ -118,12 +122,12 @@ if __name__ == '__main__':
     # --https：用同目录自签名证书启 HTTPS（局域网手机直连用；隧道方案无需加）
     ssl_ctx = None
     if '--https' in sys.argv:
-        cert = os.path.join(BASE, 'server.crt')
-        key = os.path.join(BASE, 'server.key')
+        cert = os.path.join(CERTS, 'server.crt')
+        key = os.path.join(CERTS, 'server.key')
         if os.path.exists(cert) and os.path.exists(key):
             ssl_ctx = (cert, key)
         else:
-            print('未找到 server.crt / server.key，仍按 http 启动')
+            print('未找到 certs/server.crt / certs/server.key，仍按 http 启动')
     scheme = 'https' if ssl_ctx else 'http'
     print('服务已启动：')
     print(f'  采集页（手机打开）  {scheme}://<本机IP>:8000/'

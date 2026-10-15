@@ -95,7 +95,7 @@ fetch('/api/segments').then(r => r.json()).then(d => {
   const segs = d.segments || [];
   if (!segs.length) {
     document.getElementById('stats').textContent =
-      '暂无数据：先跑 python analyze.py，再刷新本页。';
+      '暂无数据：先跑 python scripts/analyze.py，再刷新本页。';
     return;
   }
   // 路线底图（灰色细线，画在下层）

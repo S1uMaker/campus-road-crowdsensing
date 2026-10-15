@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-分析脚本：data.db → segments.json（供 /map 地图页读取）
+分析脚本：data/data.db → data/segments.json（供 /map 地图页读取）
 流程：读样本 → 低通滤波估重力 → 垂向加速度 a⊥ → 按 GPS 坐标网格（10 m × 10 m）
       聚合 → 每格 RMS → 多趟取中位数 → 分级 → 输出
 对齐方式：网格按绝对经纬度切分，不依赖"从起点数第几段"。不同骑手、不同起点、
           不同方向只要经过同一块路面，就会落入同一个网格并自动融合。
-运行：python analyze.py
+运行：python scripts/analyze.py
 注意：TH_GOOD / TH_MED 为初始值，试骑后用已知路况的锚点路段校准。
 """
 import bisect
@@ -17,9 +17,10 @@ import statistics
 import time
 from collections import defaultdict
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-DB = os.path.join(BASE, 'data.db')
-OUT = os.path.join(BASE, 'segments.json')
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA = os.path.join(ROOT, 'data')
+DB = os.path.join(DATA, 'data.db')
+OUT = os.path.join(DATA, 'segments.json')
 
 # ── 可调参数（校准改这里）────────────────────────────
 SEG_LEN = 10.0        # 网格边长（米）：越小越精细，但每格样本数越少
@@ -44,6 +45,7 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 def init_db():
+    os.makedirs(DATA, exist_ok=True)
     with sqlite3.connect(DB) as c:
         c.execute('''CREATE TABLE IF NOT EXISTS samples(
             session TEXT NOT NULL, seq INTEGER NOT NULL, i INTEGER NOT NULL,
@@ -210,7 +212,7 @@ def main():
     init_db()
     rows = load_rows()
     if not rows:
-        print('数据库为空：先运行 python gen_demo.py 生成演示数据，或去采集。')
+        print('数据库为空：先运行 python scripts/gen_demo.py 生成演示数据，或去采集。')
         with open(OUT, 'w', encoding='utf-8') as f:
             json.dump({'segments': [], 'stats': {}}, f, ensure_ascii=False)
         return

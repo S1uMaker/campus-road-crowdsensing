@@ -1,11 +1,6 @@
 # 运行产物与本地数据（不提交）
-data.db
-data.db.bak*
-segments.json
+data/
+certs/
 __pycache__/
 *.pyc
 .DS_Store
-
-# 本地自签名证书（--https 局域网方案用，不入库）
-server.crt
-server.key
