@@ -7,10 +7,13 @@
 ```
 campus-road-crowdsensing/
 ├── app.py                    # 服务端入口（Flask + SQLite）：采集页 + 上传/接口 + 地图页 + 激励页
-├── web/
-│   ├── index.html            # 采集页（手机打开；实时定位小地图；结束弹完成提示；断网自动缓存补传）
-│   ├── map.html              # 结果地图页（仅管理员：需带 ?key=；Leaflet 着色 + 平整率 + 最差路段）
-│   └── points.html           # 激励中心（积分规则 + 骑手排行榜 + 勋章）
+├── web/                      # 前端：HTML 放结构与样式，JS 放逻辑（经 /static 直出）
+│   ├── index.html            # 采集页（手机打开；实时定位小地图 + 完成提示弹窗）
+│   ├── index.js              # 采集页逻辑：传感器采集、批量上传、断网缓存、完成结算
+│   ├── map.html              # 结果地图页结构（仅管理员：需带 ?key=）
+│   ├── map.js                # 地图页逻辑：网格着色渲染、重新分析
+│   ├── points.html           # 激励中心结构
+│   └── points.js             # 激励中心逻辑：积分排行榜渲染
 ├── scripts/
 │   ├── gen_demo.py           # 生成两趟演示骑行数据（不骑车先把链路跑通；幂等，可重复运行）
 │   └── analyze.py            # 分析：去重力 → 10 m 网格 RMS → 多趟中位数 → 分级 → 写 data/segments.json

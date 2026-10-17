@@ -43,7 +43,8 @@ MAP_KEY = 'k7m2x'
 
 _analyzing = False   # /api/analyze 防并发标记
 
-app = Flask(__name__)
+# static_folder=web：让 /static/<name>.js 直接送前端脚本（页面 JS 已从 HTML 抽出）
+app = Flask(__name__, static_folder=WEB, static_url_path='/static')
 
 # ── 激励积分规则（改这里时同步改 web/points.html 的规则文案）──
 PTS_PER_1K_SAMPLES = 5    # 数据分：每 1000 条样本
