@@ -4,10 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>校园路面采集</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
-  body { font-family: system-ui, "Microsoft YaHei", sans-serif; margin: 16px; max-width: 430px; }
-  h2 { font-size: 20px; margin: 0 0 12px; }
-  button { font-size: 18px; padding: 10px 18px; margin-right: 8px; border-radius: 8px; border: 1px solid #999; }
+  body { font-family: system-ui, "Microsoft YaHei", sans-serif; margin: 16px; max-width: 430px;
+         color: #263238; }
+  h2 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #888; font-size: 13px; margin-bottom: 12px; }
+  button { font-size: 18px; padding: 10px 18px; margin-right: 8px; border-radius: 8px;
+           border: 1px solid #999; }
   #start { background: #2ecc71; color: #fff; border: none; }
   #stop  { background: #e74c3c; color: #fff; border: none; }
   button:disabled { opacity: .4; }
@@ -16,11 +20,35 @@
   .alert { background: #fdecea; border: 1px solid #e74c3c; color: #b3261e; padding: 8px;
            border-radius: 6px; margin-bottom: 10px; font-size: 14px; display: none; }
   #status { margin-top: 14px; font-size: 15px; line-height: 1.8; color: #333; }
-  .hint { color: #888; font-size: 13px; margin-top: 16px; line-height: 1.8; }
+  .hint { color: #888; font-size: 13px; margin-top: 14px; line-height: 1.8; }
+  .hint a { color: #1e88e5; }
+  .mapbox { position: relative; margin-top: 12px; }
+  #livemap { height: 230px; border-radius: 10px; background: #e8eaed; }
+  .map-tip { position: absolute; top: 8px; left: 8px; z-index: 1100;
+             background: rgba(255,255,255,.92); padding: 3px 12px; border-radius: 999px;
+             font-size: 12px; color: #555; box-shadow: 0 1px 4px rgba(0,0,0,.15); }
+  /* 采集完成弹窗 */
+  .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
+           z-index: 9999; align-items: center; justify-content: center; padding: 20px; }
+  .modal.show { display: flex; }
+  .modal-card { background: #fff; border-radius: 14px; padding: 22px 20px 18px;
+                max-width: 340px; width: 100%; text-align: center;
+                font-size: 14px; line-height: 1.9; }
+  .modal-icon { font-size: 40px; line-height: 1; }
+  .modal-title { font-weight: 700; font-size: 18px; margin: 8px 0 4px; }
+  .modal-body b { color: #1b5e20; }
+  .ptsline { margin-top: 6px; color: #555; }
+  .gold { color: #f39c12; font-size: 18px; }
+  .modal-actions { margin-top: 14px; display: flex; gap: 10px; justify-content: center; }
+  .modal-actions a, .modal-actions button { font-size: 15px; padding: 8px 16px;
+      border-radius: 8px; text-decoration: none; }
+  .modal-actions a { background: #1e88e5; color: #fff; }
+  .modal-actions button { background: #f1f3f4; border: 1px solid #ccc; color: #333; }
 </style>
 </head>
 <body>
-<h2>校园路面平整度采集</h2>
+<h2>校园路面采集</h2>
+<div class="sub">把手机固定在车把上，然后点“开始采集”</div>
 <div id="warn" class="warn"></div>
 <div id="alert" class="alert"></div>
 <label>骑手号 <input id="rider" value="r1" size="3" style="font-size:16px;padding:6px"></label>
@@ -28,17 +56,29 @@
   <button id="start">▶ 开始采集</button>
   <button id="stop" disabled>■ 停止并上传</button>
 </div>
-<div id="status">未开始</div>
-<div class="hint">
-  · 用 Chrome（安卓）或 Safari（iOS）打开，不要用微信内置浏览器<br>
-  · 手机固定在车把支架上再点"开始"<br>
-  · iOS 首次点"开始"会请求运动传感器权限，请选择允许<br>
-  · 开始后 5 秒内"加速度"条数应持续增长，不增长会出现红色提示<br>
-  · 采集期间保持本页面在前台、屏幕常亮（锁屏会中断采集）<br>
-  · 断网不影响：数据自动缓存，恢复后补传<br>
-  · 结束后等状态确认上传完成再关页面
+
+<div class="mapbox">
+  <div id="map-tip" class="map-tip">正在定位…</div>
+  <div id="livemap"></div>
 </div>
 
+<div id="status">还没有开始采集</div>
+<div class="hint">开始后请保持页面在前台、屏幕常亮，数据会安全上传<br>
+  <a href="/points">🏆 积分排行榜</a></div>
+
+<div id="done" class="modal">
+  <div class="modal-card">
+    <div id="doneIcon" class="modal-icon">✅</div>
+    <div id="doneTitle" class="modal-title">采集完成！</div>
+    <div id="doneBody" class="modal-body"></div>
+    <div class="modal-actions">
+      <a href="/points">🏆 积分排行</a>
+      <button onclick="closeDone()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const TOKEN = '';            // 与服务端 app.py 的 TOKEN 一致；留空 = 不校验
 const BATCH_MS = 10000;      // 每 10 秒批量上传一次
@@ -48,19 +88,92 @@ let buf = [];                // 待上传队列（断网就留在这里）
 let pending = null;          // 正在发送的批次 {seq, batch}，失败后保持同一 seq 重试（服务端幂等去重）
 let sending = false;
 let batchSeq = 0, running = false, lastFlush = 0;
-let upSamples = 0, nAcc = 0, nGps = 0, nMotion = 0, startedAt = 0, session = '', wakeLock = null;
+let upSamples = 0, nAcc = 0, nGps = 0, nMotion = 0, startedAt = 0, session = '';
+let riderName = '', wakeLock = null;
 let rateWinStart = 0, rateWinAcc = 0, rateWarn = false, lastRate = 0, lastHb = 0;
 let hiddenAt = 0, interruptedS = 0;
+let finishWait = false, doneOpen = false, geoErrShown = false;
 
 const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 if (!window.isSecureContext &&
     !['localhost', '127.0.0.1'].includes(location.hostname)) {
   $('warn').style.display = 'block';
-  $('warn').textContent = '浏览器要求 HTTPS 才能读取传感器和定位。'
-    + '请用 https:// 域名打开本页（本地调试可用 cloudflared，见 README）。';
+  $('warn').textContent = '当前链接无法读取手机传感器和定位，'
+    + '请换一个安全的链接重新打开本页面。';
 }
 
+// ── 实时定位小地图（自己的位置 + 本次轨迹）─────────────────
+// 高德瓦片为 GCJ-02（火星坐标），GPS 是 WGS-84，渲染时需转换
+const PI = Math.PI, AXIS = 6378245.0, EE = 0.00669342162296594323;
+function outOfChina(lat, lon) {
+  return lon < 72.004 || lon > 137.8347 || lat < 0.8293 || lat > 55.8271;
+}
+function transformLat(x, y) {
+  let r = -100 + 2*x + 3*y + 0.2*y*y + 0.1*x*y + 0.2*Math.sqrt(Math.abs(x));
+  r += (20*Math.sin(6*x*PI) + 20*Math.sin(2*x*PI)) * 2/3;
+  r += (20*Math.sin(y*PI) + 40*Math.sin(y/3*PI)) * 2/3;
+  r += (160*Math.sin(y/12*PI) + 320*Math.sin(y*PI/30)) * 2/3;
+  return r;
+}
+function transformLon(x, y) {
+  let r = 300 + x + 2*y + 0.1*x*x + 0.1*x*y + 0.1*Math.sqrt(Math.abs(x));
+  r += (20*Math.sin(6*x*PI) + 20*Math.sin(2*x*PI)) * 2/3;
+  r += (20*Math.sin(x*PI) + 40*Math.sin(x/3*PI)) * 2/3;
+  r += (150*Math.sin(x/12*PI) + 300*Math.sin(x/30*PI)) * 2/3;
+  return r;
+}
+function toTile(lat, lon) {
+  if (outOfChina(lat, lon)) return [lat, lon];
+  let dLat = transformLat(lon - 105, lat - 35);
+  let dLon = transformLon(lon - 105, lat - 35);
+  const radLat = lat / 180 * PI;
+  let magic = Math.sin(radLat);
+  magic = 1 - EE * magic * magic;
+  const sqrtMagic = Math.sqrt(magic);
+  dLat = dLat * 180 / ((AXIS * (1 - EE)) / (magic * sqrtMagic) * PI);
+  dLon = dLon * 180 / (AXIS / sqrtMagic * Math.cos(radLat) * PI);
+  return [lat + dLat, lon + dLon];
+}
+
+let lmap = null, marker = null, trackLine = null, track = [];
+if (window.L) {
+  lmap = L.map('livemap', {zoomControl: false, attributionControl: false})
+          .setView([39.9042, 116.4074], 15);
+  L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+              {subdomains: ['1', '2', '3', '4'], maxZoom: 19}).addTo(lmap);
+} else {
+  document.querySelector('.mapbox').style.display = 'none';
+}
+
+function updateLiveMap(lat, lon) {
+  if (!lmap) return;
+  const ll = toTile(lat, lon);
+  $('map-tip').style.display = 'none';
+  if (!marker) {
+    marker = L.circleMarker(ll, {radius: 8, color: '#fff', weight: 2,
+                                 fillColor: '#1e88e5', fillOpacity: 1}).addTo(lmap);
+    lmap.setView(ll, 16);
+  } else {
+    marker.setLatLng(ll);
+  }
+  if (running) {                       // 轨迹只记录采集中的路段
+    track.push(ll);
+    if (track.length > 1) {
+      if (!trackLine) {
+        trackLine = L.polyline(track, {color: '#1e88e5', weight: 4, opacity: .85})
+                     .addTo(lmap);
+      } else {
+        trackLine.addLatLng(ll);
+      }
+    }
+  }
+  lmap.panTo(ll, {animate: true, duration: .5});
+}
+
+// ── 数据采集 ──────────────────────────────────────────────
 window.addEventListener('devicemotion', e => {
   nMotion++;                    // 无论数据是否可用都计数，用于区分"没有事件"和"事件无数据"
   if (!running) return;
@@ -71,13 +184,18 @@ window.addEventListener('devicemotion', e => {
 });
 
 navigator.geolocation.watchPosition(p => {
+  updateLiveMap(p.coords.latitude, p.coords.longitude);
   if (!running) return;
   buf.push({t: Date.now(),
             lat: p.coords.latitude, lon: p.coords.longitude,
             sp: p.coords.speed});
   nGps++; refresh();
-}, err => { $('status').textContent = '定位错误：' + err.message; },
-   {enableHighAccuracy: true, maximumAge: 1000, timeout: 15000});
+}, err => {
+  if (!geoErrShown) {
+    geoErrShown = true;
+    $('#status').innerHTML = '暂时无法获取定位：请确认已允许定位权限。';
+  }
+}, {enableHighAccuracy: true, maximumAge: 1000, timeout: 15000});
 
 async function flush() {
   if (sending) return;
@@ -102,16 +220,25 @@ async function flush() {
   // 失败：pending 保留，下次用相同 seq 重试 → 服务端按 (session,seq,i) 幂等，不会重复入库
   lastFlush = Date.now();
   refresh(ok);
+  // 收尾：停止采集后数据全部传完 → 弹完成提示
+  if (ok && finishWait && !buf.length && !pending) {
+    finishWait = false;
+    showDone();
+  }
 }
 
 function refresh(lastOk) {
-  const note = lastOk === false ? '（上传失败，已缓存，将自动重传）' : '';
+  const pend = buf.length + (pending ? pending.batch.length : 0);
+  const state = running ? '采集中…' : (session ? '已结束' : '未开始');
   $('status').innerHTML =
-    `会话：${session || '—'}<br>` +
-    `已采集：加速度 ${nAcc} 条（约 ${lastRate ? lastRate.toFixed(0) : '—'} 次/秒）/ 定位 ${nGps} 条<br>` +
-    `已上传：${upSamples} 条　待上传：${buf.length + (pending ? pending.batch.length : 0)} 条 ${note}`;
+    `骑手：${esc(riderName || '—')}　状态：${state}<br>` +
+    `已记录数据：<b>${nAcc + nGps}</b> 条（定位 ${nGps} 个点）<br>` +
+    `已上传：${upSamples} 条` +
+    (pend ? `，待上传 ${pend} 条（会自动重试）` : '') +
+    (lastOk === false ? '<br>网络不稳定，数据已缓存，恢复后自动补传' : '');
 }
 
+// ── 屏幕常亮 / 状态事件上报（供数据质量追溯）──────────────
 async function keepAwake(on) {
   try {
     if (on && 'wakeLock' in navigator) {
@@ -136,7 +263,6 @@ function showAlert(msg) {
 }
 
 function logEvent(ev) {
-  // 上报页面状态事件（可见性 / WakeLock），供事后数据质量追溯；失败不影响采集
   if (!session) return;
   const headers = {'Content-Type': 'application/json'};
   if (TOKEN) headers['X-Token'] = TOKEN;
@@ -151,7 +277,8 @@ document.addEventListener('visibilitychange', () => {
     if (hiddenAt) {
       interruptedS += (Date.now() - hiddenAt) / 1000;
       hiddenAt = 0;
-      showAlert(`⚠ 采集中断过：刚才页面离开前台约 ${interruptedS.toFixed(0)} 秒，这段时间没有数据。骑行时请保持本页显示在屏幕上、不要按电源键。`);
+      showAlert(`⚠ 采集中断过：刚才页面离开前台约 ${interruptedS.toFixed(0)} 秒，`
+        + '这段时间没有记录到数据。请保持本页面显示在屏幕上。');
     }
     if (!wakeLock) keepAwake(true);   // 回到前台后自动重新申请屏幕常亮
   } else {
@@ -160,12 +287,60 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-// 更细的生命体征：用于定位"是谁把页面切走的"（桌面排查用，不影响采集）
+// 更细的生命体征：用于定位"是谁把页面切走的"（排查用，不影响采集）
 window.addEventListener('blur', () => { if (running) logEvent('blur'); });
 window.addEventListener('focus', () => { if (running) logEvent('focus'); });
 ['freeze', 'resume', 'pagehide'].forEach(n =>
   document.addEventListener(n, () => { if (running) logEvent(n); }));
 
+// ── 完成提示弹窗 ──────────────────────────────────────────
+function setModal(icon, title, body) {
+  $('doneIcon').textContent = icon;
+  $('doneTitle').textContent = title;
+  $('doneBody').innerHTML = body;
+  $('done').classList.add('show');
+}
+function closeDone() {
+  $('done').classList.remove('show');
+  doneOpen = false;
+}
+function fmtDur(s) {
+  return s >= 60 ? `${Math.floor(s / 60)} 分 ${s % 60} 秒` : `${s} 秒`;
+}
+function showUploading() {
+  setModal('📤', '正在上传数据',
+    '请保持本页打开：网络恢复后会自动继续上传，<br>完成后这里会提示您。');
+}
+async function showDone() {
+  if (doneOpen) return;
+  doneOpen = true;
+  const dur = startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0;
+  setModal('✅', '本次采集完成！',
+    `已记录 <b>${nAcc + nGps}</b> 条数据，全部安全上传<br>` +
+    `骑手 <b>${esc(riderName)}</b> · 时长约 ${fmtDur(dur)}<br>` +
+    '<div id="ptsLine" class="ptsline">正在结算积分…</div>');
+  try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch (e) {}
+  try {
+    const r = await fetch('/api/session_points?session=' + encodeURIComponent(session));
+    const d = await r.json();
+    const el = $('ptsLine');
+    if (el && d && d.ok) {
+      if (d.counted) {
+        const dist = d.dist_m >= 1000
+          ? (d.dist_m / 1000).toFixed(2) + ' 公里'
+          : Math.round(d.dist_m) + ' 米';
+        el.innerHTML = `本次里程约 ${dist} · 获得 <b class="gold">${d.points}</b> 积分 🎉`;
+      } else {
+        el.textContent = '本次时长较短，未计入积分；感谢参与！';
+      }
+    }
+  } catch (e) {
+    const el = $('ptsLine');
+    if (el) el.textContent = '数据已上传，感谢参与！';
+  }
+}
+
+// ── 开始 / 停止 ───────────────────────────────────────────
 $('start').onclick = async () => {
   // iOS 13+ Safari 必须在用户手势里申请运动传感器权限，否则收不到加速度事件
   try {
@@ -173,20 +348,30 @@ $('start').onclick = async () => {
         typeof DeviceMotionEvent.requestPermission === 'function') {
       const res = await DeviceMotionEvent.requestPermission();
       if (res !== 'granted') {
-        showAlert('运动权限被拒绝：请在 设置 → Safari → 运动与方向访问 中允许后刷新重试。');
+        showAlert('需要在系统设置中允许“运动与方向”访问，然后刷新页面重试。');
         return;   // 没有加速度数据就没必要开始
       }
     }
   } catch (e) { /* 安卓等无需申请 */ }
-  const rider = ($('rider').value || 'r1').trim();
-  session = rider + '-' + Date.now();
+  if (buf.length || pending) {          // 上一批还没传完：先补传，避免数据丢在临时缓存里
+    await flush();
+    if (buf.length || pending) {
+      showAlert('上一批数据还在上传中，请稍等片刻再开始新的采集。');
+      return;
+    }
+  }
+  riderName = ($('rider').value || 'r1').trim();
+  session = riderName + '-' + Date.now();
   buf = []; pending = null; batchSeq = 0; upSamples = 0; nAcc = 0; nGps = 0;
   nMotion = 0; startedAt = Date.now();
   rateWinStart = 0; rateWinAcc = 0; rateWarn = false; lastRate = 0; lastHb = 0;
-  hiddenAt = 0; interruptedS = 0;
+  hiddenAt = 0; interruptedS = 0; finishWait = false;
   running = true; lastFlush = Date.now();
+  closeDone();
   $('start').disabled = true; $('stop').disabled = false;
   $('alert').style.display = 'none';
+  track = [];                           // 新一趟轨迹
+  if (trackLine) { lmap.removeLayer(trackLine); trackLine = null; }
   keepAwake(true);
   logEvent('start');
   refresh();
@@ -199,11 +384,11 @@ $('stop').onclick = async () => {
   await flush();
   keepAwake(false);
   $('start').disabled = false;
-  if (interruptedS > 1) {
-    $('status').innerHTML += `<br>⚠ 本次采集中断约 ${interruptedS.toFixed(0)} 秒（这段时间没有数据）。`;
-  }
   if (!buf.length && !pending) {
-    $('status').innerHTML += '<br>✔ 已停止，数据已全部上传，可以关闭页面。';
+    showDone();                         // 已全部上传 → 弹完成提示
+  } else {
+    finishWait = true;                  // 还有残留：后台继续重试，传完自动弹提示
+    showUploading();
   }
 };
 
@@ -212,9 +397,9 @@ function checkMotion() {
   if (Date.now() - startedAt < 5000) return;
   if (nAcc === 0) {
     showAlert(nMotion === 0
-      ? '⚠ 5 秒内没有收到任何运动事件：请检查权限——安卓点地址栏锁形图标 → 权限 → 允许"运动与方向"；'
-        + 'iOS 在 设置 → Safari → 运动与方向访问 中打开；并且不要用微信/国产浏览器打开本页，换 Chrome 或 Safari。'
-      : '⚠ 收到了运动事件但加速度数据为空：请换 Chrome（安卓）或 Safari（iOS）重试。');
+      ? '没有收到手机的运动数据：请确认已允许“运动与方向”权限，'
+        + '并使用手机自带浏览器（安卓 Chrome / iOS Safari）打开本页。'
+      : '浏览器无法读取运动数据：请换用手机自带浏览器重试。');
     return;
   }
   // 采样率自检：正常约 50–60 次/秒；持续过低说明页面退到后台或屏幕熄灭
@@ -224,10 +409,9 @@ function checkMotion() {
   if (now - rateWinStart >= 5000) {
     lastRate = (nAcc - rateWinAcc) / ((now - rateWinStart) / 1000);
     rateWinStart = now; rateWinAcc = nAcc;
-    refresh();
     if (lastRate < 15) {
-      showAlert(`⚠ 加速度采样率只有约 ${lastRate.toFixed(0)} 次/秒（正常约 60）：`
-        + '页面很可能已退到后台或屏幕熄灭。请点亮屏幕、保持本页在前台，骑行中不要切到其他应用。');
+      showAlert('检测到采集中断：请让本页面保持在屏幕上并点亮屏幕，'
+        + '数据正在继续记录。');
       rateWarn = true;
     } else if (rateWarn) {
       $('alert').style.display = 'none';

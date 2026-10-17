@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>激励中心 · 校园路面采集</title>
+<style>
+  :root { --green:#2ecc71; --ink:#37474f; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f4f6f8; color: #263238;
+         font-family: system-ui, "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 18px 16px 40px; }
+  header { display: flex; align-items: baseline; justify-content: space-between;
+           flex-wrap: wrap; gap: 6px; }
+  h1 { font-size: 20px; margin: 0; color: var(--ink); }
+  nav a { color: #1e88e5; text-decoration: none; margin-left: 12px; font-size: 13px; }
+  nav a:hover { text-decoration: underline; }
+  .sub { color: #90a4ae; font-size: 12px; margin-top: 4px; }
+  .card { background: #fff; border-radius: 12px; padding: 14px 16px; margin-top: 14px;
+          box-shadow: 0 1px 4px rgba(38,50,56,.08); }
+  h3 { margin: 0 0 10px; font-size: 15px; color: var(--ink); }
+  .rule { display: flex; gap: 10px; align-items: flex-start; margin: 6px 0;
+          font-size: 13.5px; line-height: 1.55; }
+  .rule .ico { flex: 0 0 26px; text-align: center; font-size: 16px; }
+  .rule b { color: #1b5e20; }
+  .qc { color: #90a4ae; font-size: 12px; margin-top: 8px; line-height: 1.6; }
+  .rider { display: flex; gap: 12px; align-items: center; padding: 10px 0;
+           border-top: 1px dashed #eceff1; }
+  .rider:first-of-type { border-top: none; }
+  .rank { flex: 0 0 34px; height: 34px; border-radius: 50%; display: flex;
+          align-items: center; justify-content: center; font-weight: 700;
+          background: #eceff1; color: #607d8b; font-size: 15px; }
+  .rank.r1 { background: #fff8e1; }
+  .rank.r2 { background: #eceff1; }
+  .rank.r3 { background: #fbe9e7; }
+  .who { flex: 1 1 auto; min-width: 0; }
+  .name { font-weight: 600; font-size: 15px; color: var(--ink); }
+  .meta { color: #607d8b; font-size: 12.5px; margin-top: 2px; }
+  .badges { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .badge { font-size: 11.5px; border-radius: 999px; padding: 2px 9px;
+           border: 1px solid #cfd8dc; color: #90a4ae; background: #fafafa; }
+  .badge.got { border-color: #a5d6a7; background: #e8f5e9; color: #2e7d32; }
+  .pts { flex: 0 0 96px; text-align: right; }
+  .pts .num { font-size: 22px; font-weight: 700; color: #1b5e20; }
+  .pts .unit { font-size: 12px; color: #90a4ae; }
+  .pts .bd { font-size: 11px; color: #90a4ae; margin-top: 2px; line-height: 1.4; }
+  .bar { height: 6px; border-radius: 3px; background: #eceff1; margin-top: 8px;
+         overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 3px;
+           background: linear-gradient(90deg, #66bb6a, var(--green)); }
+  .empty { color: #90a4ae; text-align: center; padding: 26px 0; font-size: 13.5px; }
+  code { background: #eceff1; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>🎯 采集激励中心</h1>
+      <div class="sub" id="sub">加载中…</div>
+    </div>
+    <nav>
+      <a href="/">采集页</a>
+    </nav>
+  </header>
+
+  <div class="card">
+    <h3>积分规则</h3>
+    <div class="rule"><span class="ico">📦</span><div>
+      数据分：每记录 <b>1000</b> 条数据 <b>+5</b> 分</div></div>
+    <div class="rule"><span class="ico">🛣️</span><div>
+      里程分：每骑行 <b>100</b> 米 <b>+1</b> 分</div></div>
+    <div class="rule"><span class="ico">🚴</span><div>
+      出勤分：每完成一趟采集 <b>+20</b> 分</div></div>
+    <div class="qc" id="qc">完成采集后积分会自动更新；悬浮勋章可以查看达成条件。</div>
+  </div>
+
+  <div class="card">
+    <h3>骑手排行榜</h3>
+    <div id="board"><div class="empty">加载中…</div></div>
+  </div>
+</div>
+
+<script>
+function esc(s) {
+  return String(s).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function badgeHtml(b) {
+  return '<span class="badge' + (b.got ? ' got' : '') + '" title="'
+    + esc(b.desc) + '">' + b.icon + ' ' + esc(b.name) + '</span>';
+}
+
+function render(d) {
+  const board = document.getElementById('board');
+  document.getElementById('sub').textContent = '更新于 ' + (d.generated || '—');
+  const riders = d.riders || [];
+  if (!riders.length) {
+    board.innerHTML = '<div class="empty">暂时还没有骑手上榜——'
+      + '完成一次采集就能出现在这里！</div>';
+    return;
+  }
+  const max = Math.max.apply(null, riders.map(r => r.points).concat([1]));
+  board.innerHTML = riders.map((r, i) => {
+    const rank = i + 1;
+    const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank;
+    const km = (r.dist_m / 1000).toFixed(2);
+    return '<div class="rider">'
+      + '<div class="rank' + (rank <= 3 ? ' r' + rank : '') + '">' + medal + '</div>'
+      + '<div class="who">'
+      +   '<div class="name">' + esc(r.rider) + '</div>'
+      +   '<div class="meta">数据 ' + r.samples.toLocaleString() + ' 条 · 里程 '
+      +     km + ' km · ' + r.rides + ' 趟</div>'
+      +   '<div class="badges">' + (r.badges || []).map(badgeHtml).join('') + '</div>'
+      +   '<div class="bar"><i style="width:'
+      +     Math.round(r.points / max * 100) + '%"></i></div>'
+      + '</div>'
+      + '<div class="pts">'
+      +   '<div><span class="num">' + r.points + '</span><span class="unit"> 分</span></div>'
+      +   '<div class="bd">数据 ' + r.breakdown.data + ' · 里程 '
+      +     r.breakdown.dist + ' · 出勤 ' + r.breakdown.attend + '</div>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function load() {
+  fetch('/api/points').then(r => r.json()).then(render).catch(() => {
+    document.getElementById('sub').textContent = '暂时连接不上服务器，稍后会自动重试…';
+  });
+}
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

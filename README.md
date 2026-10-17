@@ -6,10 +6,11 @@
 
 ```
 campus-road-crowdsensing/
-├── app.py                    # 服务端入口（Flask + SQLite）：采集页 + 上传/结果接口 + 地图页
+├── app.py                    # 服务端入口（Flask + SQLite）：采集页 + 上传/接口 + 地图页 + 激励页
 ├── web/
-│   ├── index.html            # 采集页（手机浏览器打开；读加速度+GPS；批量上传；断网自动缓存补传）
-│   └── map.html              # 结果地图页（Leaflet 着色渲染 + 平整率 + 最差路段清单）
+│   ├── index.html            # 采集页（手机打开；实时定位小地图；结束弹完成提示；断网自动缓存补传）
+│   ├── map.html              # 结果地图页（仅管理员：需带 ?key=；Leaflet 着色 + 平整率 + 最差路段）
+│   └── points.html           # 激励中心（积分规则 + 骑手排行榜 + 勋章）
 ├── scripts/
 │   ├── gen_demo.py           # 生成两趟演示骑行数据（不骑车先把链路跑通；幂等，可重复运行）
 │   └── analyze.py            # 分析：去重力 → 10 m 网格 RMS → 多趟中位数 → 分级 → 写 data/segments.json
@@ -26,14 +27,20 @@ pip install flask
 python scripts/gen_demo.py   # 生成演示数据 → data/data.db
 python scripts/analyze.py    # 分析 → data/segments.json
 python app.py                # 启动服务
-# 浏览器打开 http://127.0.0.1:8000/map
+# 结果地图（仅自己，须带 key）：http://127.0.0.1:8000/map?key=k7m2x
+# 激励中心：http://127.0.0.1:8000/points
+# 之后采集完数据，在地图页点“🔄 重新分析数据”即可，无需回终端敲命令
 ```
 
-改动阈值（校准）：编辑 `scripts/analyze.py` 顶部的 `TH_GOOD / TH_MED` 后重新运行 `scripts/analyze.py`，刷新地图页即可。
+改动阈值（校准）：编辑 `scripts/analyze.py` 顶部的 `TH_GOOD / TH_MED` 后重新运行 `scripts/analyze.py`（或在地图页点"重新分析"），刷新地图页即可。当前值 2.0 / 4.0，已按首趟试骑校准（手机放挎包）。
 
 对齐方式：按**绝对经纬度 10 m 网格**融合——不同骑手、不同起点、不同方向经过同一块路面会自动合并，无需统一起点。
 
 数据质量取证：采集过程中页面会自动上报"页面可见性 / WakeLock / 心跳"事件；`scripts/analyze.py` 的输出会显示每趟的 **"页面隐藏 Xs / WakeLock 丢失 N 次"**，用来核对降频是否由熄屏或切后台引起（两者都为 0 但采样率仍过低 → 属于系统/浏览器级节流，建议换官方 Chrome）。
+
+激励机制（`/points` 激励中心）：骑手积分 = 数据分（每 1000 条样本 +5）+ 里程分（每 100 米 +1）+ 出勤分（每趟 +20），达标授予勋章（破风启程 / 数据搬运工 / 一公里俱乐部 / 三连骑 / 耐力王），由 `/api/points` 实时统计。积分口径与质检一致（剔除超速、瞬移、样本过少的会话），且入库幂等 → 重传/重放上传不会刷分（可与安全演示 Demo2 对照讲解）。
+
+结果地图对骑手隐藏：`/map` 与 `/api/segments` 需带 `?key=`（`app.py` 顶部 `MAP_KEY`，默认 `k7m2x`，留空 = 关闭保护），骑手端页面没有任何入口；骑手在采集页能看到自己的**实时定位小地图**（当前位置 + 本次轨迹），每趟结束会弹出**完成提示并结算本次积分**。
 
 ## 二、真实采集流程
 
@@ -43,7 +50,7 @@ python app.py                # 启动服务
    （没装的话：`winget install Cloudflare.cloudflared`，或官网下载单文件 exe）
 3. 手机用隧道给出的 `https://xxx.trycloudflare.com` 打开采集页
 4. **用 Chrome（安卓）/ Safari（iOS）打开，不要用微信内置浏览器**；手机固定车把支架 → 填骑手号 → 开始采集 → **先原地看 5 秒："加速度"条数持续增长再出发** → 骑行（保持页面在前台、屏幕常亮）→ 停止
-5. `python scripts/analyze.py` → 刷新 `/map`
+5. 在地图页点“🔄 重新分析数据”按钮（等价于手动 `python scripts/analyze.py`）→ 打开启动时提示的带 key 地图地址（如 `/map?key=k7m2x`）
 6. 数据在 `data/data.db`；**正式采集前先重置**（删除 `data/data.db`，`app.py`/`scripts/analyze.py` 会自动重建空库），避免把演示数据混进真实结果；想看演示效果再单独跑 `scripts/gen_demo.py`
 
 ## 三、安全演示（可选，成本低、演示效果好）

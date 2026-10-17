@@ -24,12 +24,19 @@
   <h3>校园路面平整度</h3>
   <div id="stats" class="muted">加载中…</div>
   <div style="margin-top:8px">
-    <span class="lg" style="background:#2ecc71"></span>优（RMS &lt; 0.8 m/s²）<br>
-    <span class="lg" style="background:#f39c12"></span>良（0.8 – 2.5）<br>
-    <span class="lg" style="background:#e74c3c"></span>差（&gt; 2.5）
+    <span class="lg" style="background:#2ecc71"></span>优　
+    <span class="lg" style="background:#f39c12"></span>良　
+    <span class="lg" style="background:#e74c3c"></span>差
   </div>
-  <div class="muted" style="margin-top:4px">每格约 10×10 米；颜色 = 多趟融合得分（已做 WGS-84→GCJ-02 坐标转换）</div>
+  <div class="muted" style="margin-top:4px">每格约 10×10 米；颜色越红，路面越颠簸（多趟数据融合）</div>
   <div style="margin-top:8px">最差网格 TOP5：<ol id="worst"></ol></div>
+  <div style="margin-top:10px">
+    <button id="reanalyze" style="font-size:13px;padding:5px 10px;border-radius:6px;
+            border:1px solid #1e88e5;background:#e3f2fd;color:#1e88e5;cursor:pointer">
+      🔄 重新分析数据</button>
+    <div id="anaMsg" class="muted" style="margin-top:4px;font-size:12px;line-height:1.5"></div>
+  </div>
+  <div style="margin-top:8px"><a href="/points" style="color:#1e88e5;text-decoration:none">🎯 激励中心（积分排行）→</a></div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -91,17 +98,22 @@ const t = TILES[TILE_PROVIDER];
 L.tileLayer(t.url, {subdomains: t.subdomains.split(''), attribution: t.attr, maxZoom: 19})
  .addTo(map);
 
-fetch('/api/segments').then(r => r.json()).then(d => {
+const KEY = new URLSearchParams(location.search).get('key') || '';
+const overlay = L.layerGroup().addTo(map);   // 旧渲染先清掉，便于重新分析后刷新
+
+function render(d) {
+  overlay.clearLayers();
+  document.getElementById('worst').innerHTML = '';
   const segs = d.segments || [];
   if (!segs.length) {
     document.getElementById('stats').textContent =
-      '暂无数据：先跑 python scripts/analyze.py，再刷新本页。';
+      '暂无结果：点下方“🔄 重新分析数据”生成，或等骑手上传后再试。';
     return;
   }
   // 路线底图（灰色细线，画在下层）
   if (d.route && d.route.length > 1) {
     L.polyline(d.route.map(p => toTile(p[0], p[1])),
-               {color: '#546e7a', weight: 3, opacity: .55}).addTo(map);
+               {color: '#546e7a', weight: 3, opacity: .55}).addTo(overlay);
   }
 
   // 平整度网格：每个 10 m 格子按评级着色（颜色 = 多趟融合后的得分）
@@ -113,7 +125,7 @@ fetch('/api/segments').then(r => r.json()).then(d => {
       color: COLORS[c.grade] || '#999', weight: 1, opacity: .7,
       fillColor: COLORS[c.grade] || '#999', fillOpacity: .55
     }).bindPopup(`网格 #${c.idx}　得分 ${c.score.toFixed(2)} m/s²<br>` +
-                 `评级 ${c.grade}　${c.rides} 趟数据`).addTo(map);
+                 `评级 ${c.grade}　${c.rides} 趟数据`).addTo(overlay);
     pts.push(toTile(c.lat, c.lon));
   });
   if (pts.length) map.fitBounds(pts, {padding: [30, 30]});
@@ -133,9 +145,44 @@ fetch('/api/segments').then(r => r.json()).then(d => {
     li.textContent = `#${w.idx} 得分 ${w.score.toFixed(2)}（${w.grade}）`;
     worst.appendChild(li);
   });
-}).catch(() => {
-  document.getElementById('stats').textContent = '加载 /api/segments 失败：确认服务端在运行。';
-});
+}
+
+function load() {
+  fetch('/api/segments?key=' + encodeURIComponent(KEY)).then(r => r.json())
+    .then(render).catch(() => {
+      document.getElementById('stats').textContent =
+        '加载失败：确认服务端在运行，且地址带有正确的 key。';
+    });
+}
+
+document.getElementById('reanalyze').onclick = async () => {
+  const btn = document.getElementById('reanalyze');
+  const msg = document.getElementById('anaMsg');
+  btn.disabled = true;
+  msg.style.color = '#888';
+  msg.textContent = '正在分析，请稍候…（数据一般几秒钟）';
+  try {
+    const r = await fetch('/api/analyze?key=' + encodeURIComponent(KEY), {method: 'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      const s = d.summary || {};
+      msg.style.color = '#2e7d32';
+      msg.textContent = `✅ 分析完成：${s.cells || 0} 个网格 · 平整率 `
+        + `${Math.round((s.paved_ratio || 0) * 100)}% · ${s.rides || 0} 趟有效`
+        + (s.excluded ? ` · 剔除 ${s.excluded} 个异常` : '');
+      load();
+    } else {
+      msg.style.color = '#c62828';
+      msg.textContent = '⚠ ' + (d.error || '分析失败');
+    }
+  } catch (e) {
+    msg.style.color = '#c62828';
+    msg.textContent = '⚠ 请求失败：确认服务端在运行。';
+  }
+  btn.disabled = false;
+};
+
+load();
 </script>
 </body>
 </html>
